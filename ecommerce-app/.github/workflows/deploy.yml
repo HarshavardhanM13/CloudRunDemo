@@ -20,8 +20,8 @@ on:
 
 env:
   GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-  GCP_REGION: us-central1
-  ARTIFACT_REGISTRY: ecommerce
+  GCP_REGION: us-west1
+  ARTIFACT_REGISTRY: cloudrundemo
   SERVICE_NAME_FRONTEND: ecommerce-frontend
   SERVICE_NAME_BACKEND: ecommerce-backend
   SERVICE_NAME_GATEWAY: ecommerce-gateway
