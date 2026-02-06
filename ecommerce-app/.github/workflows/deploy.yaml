@@ -1,0 +1,228 @@
+name: Build and Deploy to Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+
+env:
+  GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  GCP_REGION: us-central1
+  ARTIFACT_REGISTRY: ecommerce
+  SERVICE_NAME_FRONTEND: ecommerce-frontend
+  SERVICE_NAME_BACKEND: ecommerce-backend
+  SERVICE_NAME_GATEWAY: ecommerce-gateway
+
+jobs:
+  build_and_deploy_frontend:
+    name: Build and Deploy Frontend
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v1
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v1
+      
+      - name: Configure Docker for Artifact Registry
+        run: |
+          gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev
+      
+      - name: Create image tag
+        id: image-tag
+        run: |
+          echo "IMAGE_TAG=${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/${{ env.SERVICE_NAME_FRONTEND }}:${{ github.sha }}" >> $GITHUB_OUTPUT
+      
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ steps.image-tag.outputs.IMAGE_TAG }} ./frontend
+      
+      - name: Push to Artifact Registry
+        run: |
+          docker push ${{ steps.image-tag.outputs.IMAGE_TAG }}
+      
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.SERVICE_NAME_FRONTEND }} \
+            --image ${{ steps.image-tag.outputs.IMAGE_TAG }} \
+            --region ${{ env.GCP_REGION }} \
+            --platform managed \
+            --allow-unauthenticated \
+            --port 80
+      
+      - name: Get Frontend URL
+        run: |
+          gcloud run services describe ${{ env.SERVICE_NAME_FRONTEND }} \
+            --region ${{ env.GCP_REGION }} \
+            --format 'value(status.url)'
+
+  build_and_deploy_backend:
+    name: Build and Deploy Backend
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v1
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v1
+      
+      - name: Configure Docker for Artifact Registry
+        run: |
+          gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev
+      
+      - name: Create image tag
+        id: image-tag
+        run: |
+          echo "IMAGE_TAG=${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/${{ env.SERVICE_NAME_BACKEND }}:${{ github.sha }}" >> $GITHUB_OUTPUT
+      
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ steps.image-tag.outputs.IMAGE_TAG }} ./backend
+      
+      - name: Push to Artifact Registry
+        run: |
+          docker push ${{ steps.image-tag.outputs.IMAGE_TAG }}
+      
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.SERVICE_NAME_BACKEND }} \
+            --image ${{ steps.image-tag.outputs.IMAGE_TAG }} \
+            --region ${{ env.GCP_REGION }} \
+            --platform managed \
+            --allow-unauthenticated \
+            --port 3000
+      
+      - name: Get Backend URL
+        run: |
+          gcloud run services describe ${{ env.SERVICE_NAME_BACKEND }} \
+            --region ${{ env.GCP_REGION }} \
+            --format 'value(status.url)'
+
+  build_and_deploy_gateway:
+    name: Build and Deploy API Gateway
+    runs-on: ubuntu-latest
+    needs: [build_and_deploy_frontend, build_and_deploy_backend]
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v1
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v1
+      
+      - name: Configure Docker for Artifact Registry
+        run: |
+          gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev
+      
+      - name: Get Backend URL
+        id: backend-url
+        run: |
+          BACKEND_URL=$(gcloud run services describe ${{ env.SERVICE_NAME_BACKEND }} \
+            --region ${{ env.GCP_REGION }} \
+            --format 'value(status.url)')
+          echo "BACKEND_URL=$BACKEND_URL" >> $GITHUB_OUTPUT
+      
+      - name: Create image tag
+        id: image-tag
+        run: |
+          echo "IMAGE_TAG=${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/${{ env.SERVICE_NAME_GATEWAY }}:${{ github.sha }}" >> $GITHUB_OUTPUT
+      
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ steps.image-tag.outputs.IMAGE_TAG }} ./api-gateway
+      
+      - name: Push to Artifact Registry
+        run: |
+          docker push ${{ steps.image-tag.outputs.IMAGE_TAG }}
+      
+      - name: Deploy API Gateway to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.SERVICE_NAME_GATEWAY }} \
+            --image ${{ steps.image-tag.outputs.IMAGE_TAG }} \
+            --region ${{ env.GCP_REGION }} \
+            --platform managed \
+            --allow-unauthenticated \
+            --port 8080 \
+            --set-env-vars BACKEND_URL=${{ steps.backend-url.outputs.BACKEND_URL }}
+      
+      - name: Get Gateway URL
+        run: |
+          gcloud run services describe ${{ env.SERVICE_NAME_GATEWAY }} \
+            --region ${{ env.GCP_REGION }} \
+            --format 'value(status.url)'
+
+  smoke_test:
+    name: Run Smoke Tests
+    runs-on: ubuntu-latest
+    needs: [build_and_deploy_gateway]
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v1
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v1
+      
+      - name: Get Gateway URL
+        id: gateway-url
+        run: |
+          GATEWAY_URL=$(gcloud run services describe ${{ env.SERVICE_NAME_GATEWAY }} \
+            --region ${{ env.GCP_REGION }} \
+            --format 'value(status.url)')
+          echo "GATEWAY_URL=$GATEWAY_URL" >> $GITHUB_OUTPUT
+      
+      - name: Test Gateway Health
+        run: |
+          response=$(curl -s -o /dev/null -w "%{http_code}" ${{ steps.gateway-url.outputs.GATEWAY_URL }}/health)
+          if [ $response -eq 200 ]; then
+            echo "Gateway health check passed"
+          else
+            echo "Gateway health check failed with status $response"
+            exit 1
+          fi
+      
+      - name: Test Backend via Gateway
+        run: |
+          response=$(curl -s -o /dev/null -w "%{http_code}" ${{ steps.gateway-url.outputs.GATEWAY_URL }}/api/products)
+          if [ $response -eq 200 ]; then
+            echo "Backend API test passed"
+          else
+            echo "Backend API test failed with status $response"
+            exit 1
+          fi
